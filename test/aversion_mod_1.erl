@@ -18,3 +18,6 @@
 
 do_the_thing(#myrec{ field1 = F }) ->
 	{hi, F}.
+
+do_the_thing_rewrite(MyRec) when element(1,MyRec) ->
+	{hi, element(3,MyRec)}.

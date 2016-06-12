@@ -2,6 +2,12 @@
 
 -export([parse_transform/2]).
 
+-include_lib("syntax_tools/include/merl.hrl").
+
+-type erlang_code() :: string().
+%%-type ast_record_field() ::
+%%	{record_field, LineNum::integer(), {atom,LineNum::integer(),FieldName::atom()}}.
+
 parse_transform(AST_in, _Options) ->
 	%% debug
     io:format("== AST ==~n~p~n== AST ==~n~n", [AST_in]),
@@ -10,6 +16,13 @@ parse_transform(AST_in, _Options) ->
     %% find the definitions of those versioned records
     Aversion_defs =
     	lists:foldl(fun fold_records/2, new_defs_dict(Aversion_records), AST_in),
+	First_field_index = 3,  
+    Function_list =
+    	dict:fold(
+	    	fun(_K, V, Acc) ->
+	    		build_record_unpack_field_functions(First_field_index, V, Acc)
+	    	end, [], Aversion_defs),
+    io:format("FUNCTION LIST~n~p~n", [Function_list]),
 	%% TODO generate functions that get record fields
 	%% TODO generate functions that write record fields
 	%% TODO iterate through the AST and convert record unpacking and creation
@@ -22,6 +35,34 @@ parse_transform(AST_in, _Options) ->
 	%% debug
     % io:format("~n== New AST ==~n~p~n== New AST ==~n~n", [AST_out]),
     AST_out.
+
+%% Build a dict of field atom to a list of function heads as erlang code as a
+%% string.
+-spec build_record_unpack_field_functions(N::integer(),
+										  [term()],
+										  Function_list::[erlang_code()]) -> [erlang_code()].
+build_record_unpack_field_functions(_, [], Function_list) ->
+	Function_list;
+build_record_unpack_field_functions(N, [Record|Tail], Function_list_1) ->
+	Record_name = ast_record_name(Record),
+	Fields = ast_record_fields(Record),
+	Fn =
+		fun(Field_x,Acc) ->
+			[build_unpacker_function(Record_name, N, Field_x) | Acc]
+		end,
+	Function_list_2 = lists:foldl(Fn, [], Fields),
+	build_record_unpack_field_functions(N+1, Tail, Function_list_1 ++ Function_list_2).
+
+%%
+build_unpacker_function(Record_name, N, Field) ->
+	Field_name = ast_record_field_name(Field),
+	Fn_name = field_name_getter_function_name(Record_name, Field_name),
+	Fn_name ++ "(X) when element(1,X) == " ++ atom_to_list(Record_name) ++ " -> element(" ++ integer_to_list(N) ++ ",X).".
+
+
+-spec field_name_getter_function_name(atom(), atom()) -> string().
+field_name_getter_function_name(Record_name, Field_name) when is_atom(Field_name) ->
+	"aversion_" ++ atom_to_list(Record_name) ++ "_" ++ atom_to_list(Field_name).
 
 %%
 is_aversion_record(Defs_dict, AST_element) ->
@@ -56,15 +97,15 @@ fold_records(AST_element, Defs_dict) ->
 validate_versioned_record(Record, _Defs) ->
 	Field = ast_record_field(1, Record),
 	case ast_record_field_name(Field) of
-		{_,_,version} ->
+		version ->
 			ok;
-		{_,_,Other_name} ->
+		Other_name ->
 			error({first_field_must_be_version,Other_name})
 	end,
 	case ast_record_field_value(Field) of
-		{integer,_,N} when is_integer(N) ->
+		N when is_integer(N) ->
 			ok;
-		{integer,_,V} ->
+		V ->
 			error({version_must_be_integer,V})
 	end.
 
@@ -84,9 +125,20 @@ ast_record_field(N, {_,_,record,{_,Fields}}) when is_integer(N) ->
 	lists:nth(N, Fields).
 
 %%
-ast_record_field_name(Field) ->
-	element(3,Field).
+ast_record_fields({_,_,record,{_,Fields}}) ->
+	Fields.
 
 %%
-ast_record_field_value(Field) ->
-	element(4,Field).
+ast_record_field_name(Field) when element(1,Field) == record_field ->
+	{atom,_,Field_name} = element(3,Field),
+	Field_name.
+
+%%
+ast_record_field_value(Field) when element(1,Field) == record_field ->
+	case size(Field) of
+		4 ->
+			{_Type,_,Value} = element(4,Field),
+			Value;
+		_ ->
+			error({field_has_no_default, Field})
+	end.
