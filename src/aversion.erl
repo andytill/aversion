@@ -5,8 +5,8 @@
 -include_lib("syntax_tools/include/merl.hrl").
 
 -type erlang_code() :: string().
-%%-type ast_record_field() ::
-%%	{record_field, LineNum::integer(), {atom,LineNum::integer(),FieldName::atom()}}.
+-type ast_record() :: term().
+%%-type ast_record_field() :: term().
 
 parse_transform(AST_in, _Options) ->
 	%% debug
@@ -39,7 +39,7 @@ parse_transform(AST_in, _Options) ->
 %% Build a dict of field atom to a list of function heads as erlang code as a
 %% string.
 -spec build_record_unpack_field_functions(N::integer(),
-										  [term()],
+										  Records::[ast_record()],
 										  Function_list::[erlang_code()]) -> [erlang_code()].
 build_record_unpack_field_functions(_, [], Function_list) ->
 	Function_list;
@@ -59,7 +59,7 @@ build_unpacker_function(Record_name, N, Field) ->
 	Fn_name = field_name_getter_function_name(Record_name, Field_name),
 	Fn_name ++ "(X) when element(1,X) == " ++ atom_to_list(Record_name) ++ " -> element(" ++ integer_to_list(N) ++ ",X).".
 
-
+%%
 -spec field_name_getter_function_name(atom(), atom()) -> string().
 field_name_getter_function_name(Record_name, Field_name) when is_atom(Field_name) ->
 	"aversion_" ++ atom_to_list(Record_name) ++ "_" ++ atom_to_list(Field_name).
