@@ -34,7 +34,6 @@ parse_transform(AST_in, _Options) ->
 	    	fun(_K, V, Acc) ->
 	    		build_record_unpack_field_functions(First_field_index, V, Acc)
 	    	end, [], Aversion_defs),
-    io:format("FUNCTION LIST~n~p~n", [Function_list]),
 	%% TODO generate functions that get record fields
 	%% TODO generate functions that write record fields
 	%% TODO iterate through the AST and convert record unpacking and creation
@@ -43,7 +42,7 @@ parse_transform(AST_in, _Options) ->
     AST_out_2 = filter_aversion_records(Aversion_defs, AST_out_1),
     AST_out_3 = insert_record_getter_functions(Function_list, AST_out_2),
 	%% debug
-    io:format("~n== AST OUT ==~n~p~n== AST OUT ==~n~n", [AST_out_3]),
+    %% io:format("~n== AST OUT ==~n~p~n== AST OUT ==~n~n", [AST_out_3]),
     AST_out_3.
 
     %% remove the records that appear in -aversion attribute, they can't be kept
@@ -181,6 +180,10 @@ ast_record_field_value(Field) when element(1,Field) == record_field ->
 			error({field_has_no_default, Field})
 	end.
 
+%%
+ast_var_name({var,_,Var_name}) ->
+	Var_name.
+
 %% Creates a var, which is a variable name in erlang AST
 new_ast_var(Ln_num, Var_name) when is_integer(Ln_num), is_atom(Var_name) ->
 	{var, Ln_num, Var_name}.
@@ -223,19 +226,39 @@ new_ast_var(Ln_num, Var_name) when is_integer(Ln_num), is_atom(Var_name) ->
 %% we encounter the var, switch it for a call to the unpacker function.
 walk_ast([], AST_out, _) ->
 	lists:reverse(AST_out);
-walk_ast([AST_in | Tail], AST_out, Acc) when ?is_dict(Acc) ->	
-	AST_result =
+walk_ast(AST_in, AST_out, Acc) when not is_list(AST_in), ?is_dict(Acc) ->
+	[X] = walk_ast([AST_in], AST_out, Acc),
+	X;
+walk_ast([AST_in | Tail], AST_out_1, Acc_1) when ?is_dict(Acc_1) ->
+	{AST_result, Acc_2} =
 		case element(1,AST_in) of
 			function ->
-				walk_function_ast(AST_in, Acc);
+				{walk_function_ast(AST_in, Acc_1), Acc_1};
 			var ->
-				walk_var_ast(AST_in, Acc);
+				{walk_var_ast(AST_in, Acc_1), Acc_1};
 			tuple ->
-				walk_tuple_ast(AST_in, Acc);
+				{walk_tuple_ast(AST_in, Acc_1), Acc_1};
+			'case' ->
+				{walk_case_ast(AST_in, Acc_1), Acc_1};
+			match ->
+				walk_match_ast(AST_in, Acc_1);
+			cons ->
+				%% a list
+				{walk_cons_ast(AST_in, Acc_1), Acc_1};
+			nil ->
+				%% end of a list
+				{AST_in, Acc_1};
 			_ ->
-				AST_in
+				{AST_in, Acc_1}
 		end,
-	walk_ast(Tail, [AST_result|AST_out], Acc).
+	AST_out_2 =
+		case AST_result of
+			ignore_ast ->
+				AST_out_1;
+			_ ->
+				[AST_result|AST_out_1]
+		end,
+	walk_ast(Tail, AST_out_2, Acc_2).
 
 %%
 walk_function_ast(#function{ clauses = Clauses_1 } = F, Acc) ->
@@ -256,6 +279,15 @@ walk_function_clause_ast(#clause{ args = Args_1, body = Body_1 } = C, Acc_1) ->
 walk_function_args_ast([], AST_out, Acc) ->
 	{lists:reverse(AST_out), Acc};
 walk_function_args_ast([Rec|Tail], AST_out, Acc_1) when element(1,Rec) == record ->
+	Record_var_name = new_record_var_name(Rec),
+	{Record_var, Acc_2} = walk_record_ast(Rec, Record_var_name, Acc_1),
+	walk_function_args_ast(Tail, [Record_var|AST_out], Acc_2);
+walk_function_args_ast([Other|Tail], AST_out, Acc) ->
+	walk_function_args_ast(Tail, [Other|AST_out], Acc).
+
+%%
+-spec walk_record_ast(ast(), atom(), term()) -> {ast(), term()}.
+walk_record_ast(Rec, Record_var_name, Acc_1) when is_atom(Record_var_name) ->
 	%% does rec already have a defined name
 	%%     if so use other
 	%%     if not create one
@@ -267,7 +299,6 @@ walk_function_args_ast([Rec|Tail], AST_out, Acc_1) when element(1,Rec) == record
 	Fields = ast_record_fields(Rec),
 	Record_name = ast_record_name(Rec),
 	Ln_num = element(2,Rec),
-	Record_var_name = new_record_var_name(Rec),
 	Record_var = new_ast_var(Ln_num, Record_var_name),
 	Acc_2 = 
 		lists:foldl(
@@ -276,9 +307,16 @@ walk_function_args_ast([Rec|Tail], AST_out, Acc_1) when element(1,Rec) == record
 				Var_name = ast_record_field_var(Field),
 				dict:store(Var_name, {Record_name,Field_name,Record_var_name}, Acc_x)
 			end, Acc_1, Fields),
-	walk_function_args_ast(Tail, [Record_var|AST_out], Acc_2);
-walk_function_args_ast([Other|Tail], AST_out, Acc) ->
-	walk_function_args_ast(Tail, [Other|AST_out], Acc).
+	{Record_var, Acc_2}.
+
+%%
+walk_match_ast({match, _, Left, Right}, Acc_1) when element(1,Left) == record, element(1,Right) == var ->
+	Var_name = ast_var_name(Right),
+	{_, Acc_2} = walk_record_ast(Left, Var_name, Acc_1),
+	%% unpacking a var to a record
+	{ignore_ast, Acc_2};
+walk_match_ast(Match_ast, Acc) ->
+	{Match_ast, Acc}.
 
 %% if a record is not already matched, generate a var name for it.
 -spec new_record_var_name(ast_record()) -> atom().
@@ -290,18 +328,28 @@ new_record_var_name(Record) ->
 		Record_name_2 ++ "_" ++ integer_to_list(random:uniform(100000))
 	).
 
+%%
 walk_tuple_ast({tuple, Ln_num, Elements}, Acc) ->
 	{tuple, Ln_num, walk_ast(Elements, [], Acc)}.
 
-walk_var_ast({var, Ln_num, Var_name} = Var, Acc) when element(1,Var) == var, ?is_dict(Acc) ->
+%%
+walk_var_ast({var, _Ln_num, Var_name} = Var, Acc) when element(1,Var) == var, ?is_dict(Acc) ->
 	case dict:find(Var_name, Acc) of
 		{ok, {Record_name, Field_name, Record_var}} ->
-			?Q(field_name_getter_function_name(Record_name, Field_name) ++ "(" ++ atom_to_list(Record_var) ++ ")");
+			merl:quote(field_name_getter_function_name(Record_name, Field_name) ++ "(" ++ atom_to_list(Record_var) ++ ")");
 		error ->
 			Var
 	end.
 
+%% A list
+walk_cons_ast({cons, Ln_num, Head, Tail}, Acc) ->
+	{cons, Ln_num, walk_ast(Head, [], Acc), walk_ast(Tail, [], Acc)}.
 
+%%
+walk_case_ast({'case', Ln_num, Expression, Clauses}, Acc) ->
+	{'case', Ln_num, walk_ast(Expression,[],Acc), Clauses}.
+
+%% Add the compiled functions just before the end of the module.
 insert_record_getter_functions(Functions_1, [{eof,_}] = EOF) ->
 	Functions_2 = [?Q(F) || {_,F} <- Functions_1],
 	Functions_2 ++ EOF;
