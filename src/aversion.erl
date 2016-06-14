@@ -5,8 +5,20 @@
 -include_lib("syntax_tools/include/merl.hrl").
 
 -type erlang_code() :: string().
--type ast_record() :: term().
-%%-type ast_record_field() :: term().
+-type ast()         :: term().
+-type ast_record()  :: term().
+-type ast_record_attribute()  :: term().
+
+-record(clause,   { line_num :: integer(),
+	                args     :: list(),
+	                guards   :: list(),
+	                body     :: list()
+}).
+-record(function, { line_num :: integer(),
+	                fn_name  :: atom(),
+	                arity    :: integer(),
+	                clauses  :: [#clause{}]
+}).
 
 parse_transform(AST_in, _Options) ->
 	%% debug
@@ -27,35 +39,45 @@ parse_transform(AST_in, _Options) ->
 	%% TODO generate functions that write record fields
 	%% TODO iterate through the AST and convert record unpacking and creation
 	%%		into calls to the generated functions
+	AST_out_1 = walk_ast(AST_in, [], dict:new()),
+    AST_out_2 = filter_aversion_records(Aversion_defs, AST_out_1),
+    AST_out_3 = insert_record_getter_functions(Function_list, AST_out_2),
+	%% debug
+    io:format("~n== AST OUT ==~n~p~n== AST OUT ==~n~n", [AST_out_3]),
+    AST_out_3.
 
     %% remove the records that appear in -aversion attribute, they can't be kept
     %% as records because there will be many versions with the same name.
-    AST_out =
-    	[AST_x || AST_x <- AST_in, not is_aversion_record(Aversion_defs, AST_x)],
-	%% debug
-    % io:format("~n== New AST ==~n~p~n== New AST ==~n~n", [AST_out]),
-    AST_out.
+filter_aversion_records(Aversion_defs, AST) ->
+	[AST_x || AST_x <- AST, not is_aversion_record(Aversion_defs, AST_x)].
 
 %% Build a dict of field atom to a list of function heads as erlang code as a
 %% string.
 -spec build_record_unpack_field_functions(N::integer(),
-										  Records::[ast_record()],
+										  Records::[ast_record_attribute()],
 										  Function_list::[erlang_code()]) -> [erlang_code()].
 build_record_unpack_field_functions(_, [], Function_list) ->
-	Function_list;
+	lists:reverse(Function_list);
 build_record_unpack_field_functions(N, [Record|Tail], Function_list_1) ->
-	Record_name = ast_record_name(Record),
-	Fields = ast_record_fields(Record),
+	Record_name = ast_record_attribute_name(Record),
+	Fields = ast_record_attribute_fields(Record),
 	Fn =
-		fun(Field_x,Acc) ->
-			[build_unpacker_function(Record_name, N, Field_x) | Acc]
+		fun(Field_x, Acc) ->
+			Field_name = ast_record_field_name(Field_x),
+			Fn_key = {Record_name, Field_name},
+			case lists:keymember(Fn_key, 1, Function_list_1) of
+				false ->
+					Fn_erlang = build_unpacker_function(Record_name, N, Field_name),
+					[{Fn_key, Fn_erlang} | Acc];
+				true ->
+					Acc
+			end
 		end,
 	Function_list_2 = lists:foldl(Fn, [], Fields),
 	build_record_unpack_field_functions(N+1, Tail, Function_list_1 ++ Function_list_2).
 
 %%
-build_unpacker_function(Record_name, N, Field) ->
-	Field_name = ast_record_field_name(Field),
+build_unpacker_function(Record_name, N, Field_name) ->
 	Fn_name = field_name_getter_function_name(Record_name, Field_name),
 	Fn_name ++ "(X) when element(1,X) == " ++ atom_to_list(Record_name) ++ " -> element(" ++ integer_to_list(N) ++ ",X).".
 
@@ -66,7 +88,7 @@ field_name_getter_function_name(Record_name, Field_name) when is_atom(Field_name
 
 %%
 is_aversion_record(Defs_dict, AST_element) ->
-	is_record(AST_element) andalso dict:is_key(ast_record_name(AST_element), Defs_dict).
+	is_record_attribute(AST_element) andalso dict:is_key(ast_record_attribute_name(AST_element), Defs_dict).
 
 %% accumulate all of the records named in the aversion attribute
 fold_aversion_attributes({attribute,_,aversion,Record_list}, Acc) ->
@@ -83,7 +105,7 @@ new_defs_dict(Record_list) ->
 fold_records(AST_element, Defs_dict) ->
 	case is_aversion_record(Defs_dict, AST_element) of
 		true ->
-			Rec_name = ast_record_name(AST_element),
+			Rec_name = ast_record_attribute_name(AST_element),
 			Def_list = dict:fetch(Rec_name, Defs_dict),
 			ok = validate_versioned_record(AST_element, Def_list),
 			dict:append_list(Rec_name, [AST_element], Defs_dict);
@@ -95,7 +117,7 @@ fold_records(AST_element, Defs_dict) ->
 %% TODO the integer version must be an increment of the ast version
 %% TODO    or 1 if there are no previous versions
 validate_versioned_record(Record, _Defs) ->
-	Field = ast_record_field(1, Record),
+	Field = ast_record_attribute_field(1, Record),
 	case ast_record_field_name(Field) of
 		version ->
 			ok;
@@ -110,28 +132,44 @@ validate_versioned_record(Record, _Defs) ->
 	end.
 
 %%% ============================================================================
-%%% AST functions
+%%% AST getters
 %%% ============================================================================
 
 %%
-is_record(AST) ->
+is_record_attribute(AST) ->
 	(size(AST) >= 3 andalso element(3,AST) == record).
 
 %%
-ast_record_name({_,_,record,{Rec_name,_}}) ->
+ast_record_attribute_name({attribute,_,record,{Rec_name,_}}) ->
 	Rec_name.
 
-ast_record_field(N, {_,_,record,{_,Fields}}) when is_integer(N) ->
+%%
+ast_record_attribute_field(N, {attribute,_,record,{_,Fields}}) when is_integer(N) ->
 	lists:nth(N, Fields).
 
+
 %%
-ast_record_fields({_,_,record,{_,Fields}}) ->
+ast_record_attribute_fields({attribute,_,record,{_,Fields}}) ->
+	Fields.
+
+%%
+ast_record_name({record,_,Record_name,_}) ->
+	Record_name.
+
+%%
+ast_record_fields({record,_,_,Fields}) ->
 	Fields.
 
 %%
 ast_record_field_name(Field) when element(1,Field) == record_field ->
 	{atom,_,Field_name} = element(3,Field),
 	Field_name.
+
+%% Return the name of a field that has been unpacked...
+%%     myrec{ field1 = My_var }
+%% This will reuturn My_var as an atom().
+ast_record_field_var({record_field,_,_,{var,_,Var_name}}) ->
+	Var_name.
 
 %%
 ast_record_field_value(Field) when element(1,Field) == record_field ->
@@ -142,3 +180,130 @@ ast_record_field_value(Field) when element(1,Field) == record_field ->
 		_ ->
 			error({field_has_no_default, Field})
 	end.
+
+%% Creates a var, which is a variable name in erlang AST
+new_ast_var(Ln_num, Var_name) when is_integer(Ln_num), is_atom(Var_name) ->
+	{var, Ln_num, Var_name}.
+
+
+%%% ============================================================================
+%%% AST iteration
+%%% ============================================================================
+
+% do_the_thing(#myrec{ field1 = F }) ->
+% 	{hi, F}.
+
+%% ORIGINAL AST...
+
+% {function,19,do_the_thing,1,
+%      [{clause,19,
+%           [{record,19,myrec,
+%                [{record_field,19,{atom,19,field1},{var,19,'F'}}]}],
+%           [],
+%           [{tuple,20,[{atom,20,hi},{var,20,'F'}]}]}]}
+
+%% TO...
+
+% {function,22,do_the_thing_rewrite,1,
+%      [{clause,22,
+%           [{var,22,'MyRec'}],
+%           [[{call,22,{atom,22,element},[{integer,22,1},{var,22,'MyRec'}]}]],
+%           [{tuple,23,
+%                [{atom,23,hi},
+%                 {call,23,
+%                     {atom,23,element},
+%                     [{integer,23,3},{var,23,'MyRec'}]}]}]}]}
+
+-define(is_dict(Dict), element(1,Dict) == dict).
+
+%% The plan for unpacking record fields...
+%%
+%% Any time we encounter a `record_field` tuple, hold the record, field where
+%% it came from and the var. Replace the record tuple with a plain var.  When
+%% we encounter the var, switch it for a call to the unpacker function.
+walk_ast([], AST_out, _) ->
+	lists:reverse(AST_out);
+walk_ast([AST_in | Tail], AST_out, Acc) when ?is_dict(Acc) ->	
+	AST_result =
+		case element(1,AST_in) of
+			function ->
+				walk_function_ast(AST_in, Acc);
+			var ->
+				walk_var_ast(AST_in, Acc);
+			tuple ->
+				walk_tuple_ast(AST_in, Acc);
+			_ ->
+				AST_in
+		end,
+	walk_ast(Tail, [AST_result|AST_out], Acc).
+
+%%
+walk_function_ast(#function{ clauses = Clauses_1 } = F, Acc) ->
+	Clauses_2 = [walk_function_clause_ast(C, Acc) || C <- Clauses_1],
+	F#function{ clauses = Clauses_2 }.
+
+%% A clause is one function head within a function.
+walk_function_clause_ast(#clause{ args = Args_1, body = Body_1 } = C, Acc_1) ->
+	%% TODO this should return extra guards as well to make sure any vars are
+	%%      records
+	{Args_2, Acc_2} = walk_function_args_ast(Args_1, [], Acc_1),
+	Body_2 = walk_ast(Body_1, [], Acc_2),
+	C#clause{ args = Args_2, body = Body_2 }.
+
+%%
+-spec walk_function_args_ast([ast()], [ast()], Acc::term()) ->
+		{AST_out::[ast()], Acc2::term()}.
+walk_function_args_ast([], AST_out, Acc) ->
+	{lists:reverse(AST_out), Acc};
+walk_function_args_ast([Rec|Tail], AST_out, Acc_1) when element(1,Rec) == record ->
+	%% does rec already have a defined name
+	%%     if so use other
+	%%     if not create one
+	%% go through the fields and key the name it was unpacked to, against the
+	%% record and field name.
+	%% replace the record with variable name
+	%% in the body replace uses of the field name with calls to the getter using
+	%% ..the record and field name we have keyed against it.
+	Fields = ast_record_fields(Rec),
+	Record_name = ast_record_name(Rec),
+	Ln_num = element(2,Rec),
+	Record_var_name = new_record_var_name(Rec),
+	Record_var = new_ast_var(Ln_num, Record_var_name),
+	Acc_2 = 
+		lists:foldl(
+			fun(Field, Acc_x) ->
+				Field_name = ast_record_field_name(Field),
+				Var_name = ast_record_field_var(Field),
+				dict:store(Var_name, {Record_name,Field_name,Record_var_name}, Acc_x)
+			end, Acc_1, Fields),
+	walk_function_args_ast(Tail, [Record_var|AST_out], Acc_2);
+walk_function_args_ast([Other|Tail], AST_out, Acc) ->
+	walk_function_args_ast(Tail, [Other|AST_out], Acc).
+
+%% if a record is not already matched, generate a var name for it.
+-spec new_record_var_name(ast_record()) -> atom().
+new_record_var_name(Record) ->
+	Record_name_1 = ast_record_name(Record),
+	[First|Tail] = atom_to_list(Record_name_1),
+	Record_name_2 = [string:to_upper(First)|Tail],
+	list_to_atom(
+		Record_name_2 ++ "_" ++ integer_to_list(random:uniform(100000))
+	).
+
+walk_tuple_ast({tuple, Ln_num, Elements}, Acc) ->
+	{tuple, Ln_num, walk_ast(Elements, [], Acc)}.
+
+walk_var_ast({var, Ln_num, Var_name} = Var, Acc) when element(1,Var) == var, ?is_dict(Acc) ->
+	case dict:find(Var_name, Acc) of
+		{ok, {Record_name, Field_name, Record_var}} ->
+			?Q(field_name_getter_function_name(Record_name, Field_name) ++ "(" ++ atom_to_list(Record_var) ++ ")");
+		error ->
+			Var
+	end.
+
+
+insert_record_getter_functions(Functions_1, [{eof,_}] = EOF) ->
+	Functions_2 = [?Q(F) || {_,F} <- Functions_1],
+	Functions_2 ++ EOF;
+insert_record_getter_functions(Functions, [AST|Tail]) ->
+	[AST|insert_record_getter_functions(Functions,Tail)].

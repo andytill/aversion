@@ -16,8 +16,24 @@
 	field2
 }).
 
-do_the_thing(#myrec{ field1 = F }) ->
-	{hi, F}.
+get_field1_v1_test() ->
+	?assertEqual(
+		{ok, "hello"},
+		get_field1({myrec, 1, "hello"})
+	).
+
+get_field1_v2_test() ->
+	?assertEqual(
+		{ok, "hello"},
+		get_field1({myrec, 2, "hello", nnn})
+	).
+
+
+get_field1(#myrec{ field1 = F }) ->
+	{ok, F}.
+
+% do_the_thing_match(#myrec{ field1 = F } = _XXXX) ->
+% 	{hi, F}.
 
 do_the_thing_rewrite(MyRec) when element(1,MyRec) ->
 	{hi, element(3,MyRec)}.
