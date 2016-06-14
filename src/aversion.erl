@@ -2,8 +2,6 @@
 
 -export([parse_transform/2]).
 
--include_lib("syntax_tools/include/merl.hrl").
-
 -type erlang_code() :: string().
 -type ast()         :: term().
 -type ast_record()  :: term().
@@ -34,11 +32,10 @@ parse_transform(AST_in, _Options) ->
 	    	fun(_K, V, Acc) ->
 	    		build_record_unpack_field_functions(First_field_index, V, Acc)
 	    	end, [], Aversion_defs),
-	%% TODO generate functions that get record fields
-	%% TODO generate functions that write record fields
-	%% TODO iterate through the AST and convert record unpacking and creation
-	%%		into calls to the generated functions
-	AST_out_1 = walk_ast(AST_in, [], dict:new()),
+    %% create a dict of the record names, tagged with `aversion_record` for
+    %% namespacing, since this dict will also contain the variable names for fields
+    Record_names = [{{aversion_record, R}, ok} || R <- dict:fetch_keys(Aversion_defs)],
+	AST_out_1 = walk_ast(AST_in, [], dict:from_list(Record_names)),
     AST_out_2 = filter_aversion_records(Aversion_defs, AST_out_1),
     AST_out_3 = insert_record_getter_functions(Function_list, AST_out_2),
 	%% debug
@@ -279,9 +276,16 @@ walk_function_clause_ast(#clause{ args = Args_1, body = Body_1 } = C, Acc_1) ->
 walk_function_args_ast([], AST_out, Acc) ->
 	{lists:reverse(AST_out), Acc};
 walk_function_args_ast([Rec|Tail], AST_out, Acc_1) when element(1,Rec) == record ->
-	Record_var_name = new_record_var_name(Rec),
-	{Record_var, Acc_2} = walk_record_ast(Rec, Record_var_name, Acc_1),
-	walk_function_args_ast(Tail, [Record_var|AST_out], Acc_2);
+	%% check if this record is actually versioned, if not then do nothing
+	case dict:is_key({aversion_record, ast_record_name(Rec)}, Acc_1) of
+		true ->
+			Record_var_name = new_record_var_name(Rec),
+			{AST_result, Acc_2} = walk_record_ast(Rec, Record_var_name, Acc_1);
+		false ->
+			AST_result = Rec,
+			Acc_2 = Acc_1
+	end ,
+	walk_function_args_ast(Tail, [AST_result|AST_out], Acc_2);
 walk_function_args_ast([Other|Tail], AST_out, Acc) ->
 	walk_function_args_ast(Tail, [Other|AST_out], Acc).
 
@@ -349,9 +353,9 @@ walk_cons_ast({cons, Ln_num, Head, Tail}, Acc) ->
 walk_case_ast({'case', Ln_num, Expression, Clauses}, Acc) ->
 	{'case', Ln_num, walk_ast(Expression,[],Acc), Clauses}.
 
-%% Add the compiled functions just before the end of the module.
+%% Insert the functions which we will compile, just before the end of the module.
 insert_record_getter_functions(Functions_1, [{eof,_}] = EOF) ->
-	Functions_2 = [?Q(F) || {_,F} <- Functions_1],
+	Functions_2 = [merl:quote(F) || {_,F} <- Functions_1],
 	Functions_2 ++ EOF;
 insert_record_getter_functions(Functions, [AST|Tail]) ->
 	[AST|insert_record_getter_functions(Functions,Tail)].

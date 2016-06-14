@@ -1,4 +1,4 @@
--module(aversion_mod_1).
+-module(mod_1_syntax).
 -compile([export_all]).
 -compile({parse_transform, aversion}).
 
