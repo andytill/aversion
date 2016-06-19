@@ -52,25 +52,14 @@ get_field_v1_in_list_as_tail_test() ->
 		get_field1_in_list_as_tail({myrec, 1, banjo})
 	).
 
+%%
+%%
+
 get_field_v1_in_case_expression_test() ->
 	?assertEqual(
 		a_banjo,
 		a_case_expression({myrec, 1, banjo})
 	).
-
-unpack_field1_v1_in_function_clause_body_test() ->
-	?assertEqual(
-		oko,
-		unpack_in_function_clause_body({myrec, 1, oko})
-	).
-
-%%%
-%%%
-%%%
-
-unpack_in_function_clause_body(MyRec) ->
-	#myrec{ field1 = Field } = MyRec,
-	Field.
 
 a_case_expression(#myrec{ field1 = F }) ->
 	case F of
@@ -79,6 +68,34 @@ a_case_expression(#myrec{ field1 = F }) ->
 		banjo ->
 			a_banjo
 	end.
+
+%%
+%%
+
+unpack_field1_v1_in_function_clause_body_test() ->
+	?assertEqual(
+		oko,
+		unpack_in_function_clause_body({myrec, 1, oko})
+	).
+
+unpack_in_function_clause_body(MyRec) ->
+	#myrec{ field1 = Field } = MyRec,
+	Field.
+
+%%
+%%
+
+unpack_all_myrec_fields_test() ->
+	?assertEqual(
+		{2,f1,f2},
+		unpack_all_myrec_fields({myrec,2,f1,f2})
+	).
+
+unpack_all_myrec_fields(#myrec{ version = V, field1 = F1, field2 = F2 }) ->
+	{V,F1,F2}.
+
+%%
+%%
 
 get_field1(#myrec{ field1 = F }) ->
 	F.

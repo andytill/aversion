@@ -26,7 +26,7 @@ parse_transform(AST_in, _Options) ->
     %% find the definitions of those versioned records
     Aversion_defs =
     	lists:foldl(fun fold_records/2, new_defs_dict(Aversion_records), AST_in),
-	First_field_index = 3,  
+	First_field_index = 2,  
     Function_list =
     	dict:fold(
 	    	fun(_K, V, Acc) ->
@@ -54,23 +54,23 @@ filter_aversion_records(Aversion_defs, AST) ->
 										  Function_list::[erlang_code()]) -> [erlang_code()].
 build_record_unpack_field_functions(_, [], Function_list) ->
 	lists:reverse(Function_list);
-build_record_unpack_field_functions(N, [Record|Tail], Function_list_1) ->
+build_record_unpack_field_functions(N_1, [Record|Tail], Function_list_1) ->
 	Record_name = ast_record_attribute_name(Record),
 	Fields = ast_record_attribute_fields(Record),
 	Fn =
-		fun(Field_x, Acc) ->
+		fun(Field_x, {N_x, Acc}) ->
 			Field_name = ast_record_field_name(Field_x),
 			Fn_key = {Record_name, Field_name},
 			case lists:keymember(Fn_key, 1, Function_list_1) of
 				false ->
-					Fn_erlang = build_unpacker_function(Record_name, N, Field_name),
-					[{Fn_key, Fn_erlang} | Acc];
+					Fn_erlang = build_unpacker_function(Record_name, N_x, Field_name),
+					{N_x+1,[{Fn_key, Fn_erlang} | Acc]};
 				true ->
-					Acc
+					{N_x, Acc}
 			end
 		end,
-	Function_list_2 = lists:foldl(Fn, [], Fields),
-	build_record_unpack_field_functions(N+1, Tail, Function_list_1 ++ Function_list_2).
+	{N_2, Function_list_2} = lists:foldl(Fn, {N_1, []}, Fields),
+	build_record_unpack_field_functions(N_2, Tail, Function_list_1 ++ Function_list_2).
 
 %%
 build_unpacker_function(Record_name, N, Field_name) ->
@@ -189,30 +189,6 @@ new_ast_var(Ln_num, Var_name) when is_integer(Ln_num), is_atom(Var_name) ->
 %%% ============================================================================
 %%% AST iteration
 %%% ============================================================================
-
-% do_the_thing(#myrec{ field1 = F }) ->
-% 	{hi, F}.
-
-%% ORIGINAL AST...
-
-% {function,19,do_the_thing,1,
-%      [{clause,19,
-%           [{record,19,myrec,
-%                [{record_field,19,{atom,19,field1},{var,19,'F'}}]}],
-%           [],
-%           [{tuple,20,[{atom,20,hi},{var,20,'F'}]}]}]}
-
-%% TO...
-
-% {function,22,do_the_thing_rewrite,1,
-%      [{clause,22,
-%           [{var,22,'MyRec'}],
-%           [[{call,22,{atom,22,element},[{integer,22,1},{var,22,'MyRec'}]}]],
-%           [{tuple,23,
-%                [{atom,23,hi},
-%                 {call,23,
-%                     {atom,23,element},
-%                     [{integer,23,3},{var,23,'MyRec'}]}]}]}]}
 
 -define(is_dict(Dict), element(1,Dict) == dict).
 
