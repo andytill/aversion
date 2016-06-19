@@ -4759,7 +4759,7 @@ endif
 
 # Configuration.
 
-ERLC_OPTS ?= -Werror +debug_info +warn_export_vars +warn_shadow_vars \
+ERLC_OPTS ?= -Werror +debug_info +warn_shadow_vars \
 	+warn_obsolete_guard # +bin_opt_info +warn_export_all +warn_missing_spec
 COMPILE_FIRST ?=
 COMPILE_FIRST_PATHS = $(addprefix src/,$(addsuffix .erl,$(COMPILE_FIRST)))
@@ -5070,7 +5070,7 @@ TEST_DIR ?= $(CURDIR)/test
 
 ALL_TEST_DEPS_DIRS = $(addprefix $(DEPS_DIR)/,$(TEST_DEPS))
 
-TEST_ERLC_OPTS ?= +debug_info +warn_export_vars +warn_shadow_vars +warn_obsolete_guard
+TEST_ERLC_OPTS ?= +debug_info +warn_shadow_vars +warn_obsolete_guard
 TEST_ERLC_OPTS += -DTEST=1
 
 # Targets.

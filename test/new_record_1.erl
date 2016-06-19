@@ -1,4 +1,4 @@
--module(aversion_mod_1).
+-module(new_record_1).
 -compile([export_all]).
 -compile({parse_transform, aversion}).
 
@@ -8,13 +8,18 @@
 
 -record(myrec, {
 	version = 1,
-	field1 = 1
+	field1 = banjo
 }).
 
 -record(myrec, {
 	version = 2,
-	field2
+	field2 = oko
 }).
 
-do_the_thing(#myrec{ field1 = F }) ->
-	{hi, F}.
+new_default_record_test() ->
+	?assertEqual(
+		{myrec,2,banjo,oko},
+		default_myrec()
+	).
+
+default_myrec() -> #myrec{ }.
