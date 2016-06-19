@@ -1,5 +1,7 @@
 # Aversion
 
+![Affero GPL](https://www.gnu.org/graphics/agplv3-88x31.png)
+
 Aversion is a parse transform for handling multiple versions of an erlang record, while still allowing the record unpack syntax.
 
 The same record is deifined multiple times, the version field must be the first field. Other field names may not be duplicated. Each record version includes all of the fields of the previous versions.
