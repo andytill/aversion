@@ -20,7 +20,7 @@
 
 parse_transform(AST_in, _Options) ->
 	%% debug
-    io:format("== AST ==~n~p~n== AST ==~n~n", [AST_in]),
+    %%io:format("== AST ==~n~p~n== AST ==~n~n", [AST_in]),
     %% find which records need to be versioned
     Aversion_records = lists:foldl(fun fold_aversion_attributes/2, [], AST_in),
     %% find the definitions of those versioned records
@@ -37,13 +37,21 @@ parse_transform(AST_in, _Options) ->
     Record_names = [{{aversion_record, R}, ok} || R <- dict:fetch_keys(Aversion_defs)],
 	AST_out_1 = walk_ast(AST_in, [], dict:from_list(Record_names)),
     AST_out_2 = filter_aversion_records(Aversion_defs, AST_out_1),
-    AST_out_3 = insert_record_getter_functions(Function_list, AST_out_2),
+    AST_out_3 = insert_function_asts([merl:quote(F) || {_,F} <- Function_list], AST_out_2),
+    %%
+    New_record_function_list =
+    	dict:fold(
+	    	fun(K, V, Acc) ->
+	    		[build_new_record_fns(K, V, 1, []) | Acc]
+	    	end, [], Aversion_defs),
+
+    AST_out_4 = insert_function_asts(New_record_function_list, AST_out_3),
 	%% debug
     %% io:format("~n== AST OUT ==~n~p~n== AST OUT ==~n~n", [AST_out_3]),
-    AST_out_3.
+    AST_out_4.
 
-    %% remove the records that appear in -aversion attribute, they can't be kept
-    %% as records because there will be many versions with the same name.
+%% remove the records that appear in -aversion attribute, they can't be kept
+%% as records because there will be many versions with the same name.
 filter_aversion_records(Aversion_defs, AST) ->
 	[AST_x || AST_x <- AST, not is_aversion_record(Aversion_defs, AST_x)].
 
@@ -143,6 +151,9 @@ ast_record_attribute_name({attribute,_,record,{Rec_name,_}}) ->
 ast_record_attribute_field(N, {attribute,_,record,{_,Fields}}) when is_integer(N) ->
 	lists:nth(N, Fields).
 
+%% Assume that the version field is always, and has been validated by this point.
+ast_record_attribute_version({attribute,_,record,{_,[Version_field|_]}}) ->
+	ast_record_field_value(Version_field).
 
 %%
 ast_record_attribute_fields({attribute,_,record,{_,Fields}}) ->
@@ -175,6 +186,16 @@ ast_record_field_value(Field) when element(1,Field) == record_field ->
 			Value;
 		_ ->
 			error({field_has_no_default, Field})
+	end.
+
+%%
+ast_record_field_value(Field, Default) when element(1,Field) == record_field ->
+	case size(Field) of
+		4 ->
+			{_Type,_,Value} = element(4,Field),
+			Value;
+		_ ->
+			Default
 	end.
 
 %%
@@ -221,6 +242,8 @@ walk_ast([AST_in | Tail], AST_out_1, Acc_1) when ?is_dict(Acc_1) ->
 			nil ->
 				%% end of a list
 				{AST_in, Acc_1};
+			record ->
+				{walk_record_ast(AST_in, Acc_1), Acc_1};
 			_ ->
 				{AST_in, Acc_1}
 		end,
@@ -256,7 +279,7 @@ walk_function_args_ast([Rec|Tail], AST_out, Acc_1) when element(1,Rec) == record
 	case dict:is_key({aversion_record, ast_record_name(Rec)}, Acc_1) of
 		true ->
 			Record_var_name = new_record_var_name(Rec),
-			{AST_result, Acc_2} = walk_record_ast(Rec, Record_var_name, Acc_1);
+			{AST_result, Acc_2} = walk_record_unpack_ast(Rec, Record_var_name, Acc_1);
 		false ->
 			AST_result = Rec,
 			Acc_2 = Acc_1
@@ -266,8 +289,8 @@ walk_function_args_ast([Other|Tail], AST_out, Acc) ->
 	walk_function_args_ast(Tail, [Other|AST_out], Acc).
 
 %%
--spec walk_record_ast(ast(), atom(), term()) -> {ast(), term()}.
-walk_record_ast(Rec, Record_var_name, Acc_1) when is_atom(Record_var_name) ->
+-spec walk_record_unpack_ast(ast(), atom(), term()) -> {ast(), term()}.
+walk_record_unpack_ast(Rec, Record_var_name, Acc_1) when is_atom(Record_var_name) ->
 	%% does rec already have a defined name
 	%%     if so use other
 	%%     if not create one
@@ -289,10 +312,14 @@ walk_record_ast(Rec, Record_var_name, Acc_1) when is_atom(Record_var_name) ->
 			end, Acc_1, Fields),
 	{Record_var, Acc_2}.
 
+walk_record_ast(Rec_ast, _Acc_1) ->
+	Rec_name = ast_record_name(Rec_ast),
+	merl:quote("aversion_new_" ++ atom_to_list(Rec_name) ++ "_latest()").
+
 %%
 walk_match_ast({match, _, Left, Right}, Acc_1) when element(1,Left) == record, element(1,Right) == var ->
 	Var_name = ast_var_name(Right),
-	{_, Acc_2} = walk_record_ast(Left, Var_name, Acc_1),
+	{_, Acc_2} = walk_record_unpack_ast(Left, Var_name, Acc_1),
 	%% unpacking a var to a record
 	{ignore_ast, Acc_2};
 walk_match_ast(Match_ast, Acc) ->
@@ -330,8 +357,35 @@ walk_case_ast({'case', Ln_num, Expression, Clauses}, Acc) ->
 	{'case', Ln_num, walk_ast(Expression,[],Acc), Clauses}.
 
 %% Insert the functions which we will compile, just before the end of the module.
-insert_record_getter_functions(Functions_1, [{eof,_}] = EOF) ->
-	Functions_2 = [merl:quote(F) || {_,F} <- Functions_1],
-	Functions_2 ++ EOF;
-insert_record_getter_functions(Functions, [AST|Tail]) ->
-	[AST|insert_record_getter_functions(Functions,Tail)].
+insert_function_asts(Functions, [{eof,_}] = EOF) ->
+	Functions ++ EOF;
+insert_function_asts(Functions, [AST|Tail]) ->
+	[AST|insert_function_asts(Functions,Tail)].
+
+
+%%% ============================================================================
+%%% Creating Records
+%%% ============================================================================
+
+%% Creating records with default values
+%%     Records that set fields will then set individual values over the defaults
+%% One function for creating the  latest version
+%% One function for creating a specific version
+build_new_record_fns(Record_name, [], Version, Fields) ->
+	Record_tuple = list_to_tuple(
+		[Record_name, Version] ++ [ast_record_field_value(F, undefined) || F <- Fields]),
+	Function_erlang = lists:flatten(io_lib:format(
+		"aversion_new_~p_latest() -> ~p.", [Record_name,Record_tuple]
+	)),
+	merl:quote(Function_erlang);
+build_new_record_fns(Record_name, [Rec|Tail], _, Fields) ->
+	Version = ast_record_attribute_version(Rec),
+	%% first fields is always version
+	[_|Rec_fields] = ast_record_attribute_fields(Rec),
+	build_new_record_fns(Record_name, Tail, Version, Fields++Rec_fields).
+
+
+
+
+
+
