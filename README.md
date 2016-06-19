@@ -1,10 +1,12 @@
 # Aversion
 
-![Affero GPL](https://www.gnu.org/graphics/agplv3-88x31.png)
+![Affero GPL v3 Licensed](https://www.gnu.org/graphics/agplv3-88x31.png)
 
-Aversion is a parse transform for handling multiple versions of an erlang record, while still allowing the record unpack syntax.
+**Aversion is very much a work in progress. Not all of the features described are working, it is as much a spec as docs at the moment. If you would like to contribute then please write up a use case as an issue, or a test module with a failing test. See the tests in the test directory for examples.**
 
-The same record is deifined multiple times, the version field must be the first field. Other field names may not be duplicated. Each record version includes all of the fields of the previous versions.
+Aversion is a parse transform for handling multiple versions of an erlang record that are **backwards** and **forwards** compatible, while still supporting the erlang record syntax.
+
+The same record is defined multiple times, the version field must be the first field. Other field names may not be duplicated. Each record version includes all of the fields of the previous versions.
 
 ```erlang
 %% the original definition for the project record, defined for an
@@ -22,36 +24,9 @@ The same record is deifined multiple times, the version field must be the first 
 }).
 ```
 
-A parse transform will use these record definitions to auto generate functions that can manipulate different versions of the records.
+The aversion parse transform will use these record definitions to generate functions that can manipulate different versions of the records. The parse transform inserts calls to the generated functions wherever the record is used. This is similar to having a module API for a record, but is transparent and supports the normal erlang record syntax.
 
-```erlang
-print_name(#project{ name = Name }) ->
-    io:format(Name).
-```
-
-The code above will be writable with the parse transform.
-
-```erlang
-print_name(Project) ->
-    Name = project_name(Project),
-    io:format(Name).
-
-%% this example doesn't need to check the version, but it could do
-%% version specific checks if we need to
-project_name(P) when element(1, P) == project ->
-    element(2, P).
-```
-
-It will get generated into this code, above.  Additionally the parse transform could generate utility functions.
-
-+ upgrade/downgrade a record between versions.
-+ check if a version is supported.
-
-A migration might even modify record field values.
-
-### Creating a record that has migrations
-
-Code will be rewritten to create a tuple with the correct schema for the version specified in the version field. The code below could be written in the same module.
+Specific versions of records can be created.
 
 ```erlang
 %% version 1
@@ -61,7 +36,11 @@ Code will be rewritten to create a tuple with the correct schema for the version
 {project, 2, <<"erlyberly">>, 0} = #project{ version = 2, name = <<"erlyberly">> }.
 ```
 
-This is useful because a node might be aware that the cluster only supports version 1 even if this node can support version 2.
+If the `version` field is not specified, then the latest version of the record will be created. 
+
+```erlang
+{project, 2, <<"erlyberly">>, 0} = #project{ name = <<"erlyberly">> }.
+```
 
 ### Scenarios
 
@@ -81,7 +60,7 @@ If the record does not have a field and we want to write the field version to it
 
 Specifying the `version` field in a record will create a record of that version.
 
-riak should know the version number that can be created using capabilities.
+The application needs to know what is the highest supported version in the cluster. Applications built with riak_core should know the version number that can be created using capabilities.
 
 If a record needs to be downgraded in a way that results in data loss then the request that initiated the work must be rejected as not supported by the cluster.
 
@@ -224,7 +203,7 @@ VersionNumber = riak_core_capability:get({riak_core, fold_req_version}, 1),
 ##### `is_safely_downgradable/1`
 
 ```erlang
-is_safely_downgradable(NewVersion, Record::tuple()) -> boolean().
+is_safely_downgradable(NewVersion::integer(), Record::tuple()) -> boolean().
 ```
 
 If the fields in the record that were added are equal to the default values then the record is safe to downgrade because no data is lost.
@@ -240,68 +219,3 @@ Throws an error if the record is not safely downgradable.
 ##### `force_downgrade/2`
 
 YOLO downgrade, chop the record fields that do not exist in the requested version.
-
-### Rewrites
-
-```erlang
--record(myrec, { a }).v
-```
-
-##### Versioned record in function head
-
-```erlang
-my_function(#myrec{ a = A }) ->
-    io:format("~p",[A]).
-```
-
-```erlang
-my_function(MyRec) when element(1,MyRec) == myrec ->
-    A = get_myrec_a(MyRec),
-    io:format("~p",[A]).
-```
-
-##### Versioned record field used in function guard
-
-```erlang
-my_function(#myrec{ a = A }) when is_atom(A) ->
-    io:format("~p",[A]).
-```
-
-```erlang
-my_function(MyRec) when element(1,MyRec) == myrec andalso
-                        is_atom(element(3,MyRec)) ->
-    A = get_myrec_a(MyRec),
-    io:format("~p",[A]).
-```
-
-##### `is_record/2` in function guard
-
-```erlang
-my_function(MyRec) when is_record(MyRec, myrec) ->
-    io:format("~p",[MyRec]).
-```
-
-```erlang
-my_function(MyRec) when element(1,MyRec) == myrec ->
-    io:format("~p",[MyRec]).
-```
-
-##### Versioned record in fun
-
-##### Versioned record in case clause
-
-##### Versioned record access record field
-
-```erlang
-MyRec#myrec.a.
-```
-##### Versioned record access record field position
-
-```erlang
-#myrec.a.
-```
-
-
-
-
-
