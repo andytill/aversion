@@ -63,11 +63,17 @@ parse_transform(AST_in, _Options) ->
 	    	fun(K, V, Acc) ->
 	    		[build_new_record_fns(K, V, 1, []) | Acc]
 	    	end, [], Aversion_defs),
-
     AST_out_4 = insert_function_asts(New_record_function_list, AST_out_3),
+    First_setter_index = 3,
+    Setter_function_list =
+    	dict:fold(
+	    	fun(K, V, Acc) ->
+	    		build_record_setter_fns(K, V, First_setter_index, Acc)
+	    	end, [], Aversion_defs),
+    AST_out_5 = insert_function_asts(Setter_function_list, AST_out_4),
 	%% debug
     %% io:format("~n== AST OUT ==~n~p~n== AST OUT ==~n~n", [AST_out_3]),
-    AST_out_4.
+    AST_out_5.
 
 %% remove the records that appear in -aversion attribute, they can't be kept
 %% as records because there will be many versions with the same name.
@@ -208,6 +214,15 @@ ast_record_field_value(Field) when element(1,Field) == record_field ->
 	end.
 
 %%
+ast_record_field_value_ast(Field) when element(1,Field) == record_field ->
+	case size(Field) of
+		4 ->
+			element(4,Field);
+		_ ->
+			error({field_has_no_default, Field})
+	end.
+
+%%
 ast_record_field_value(Field, Default) when element(1,Field) == record_field ->
 	case size(Field) of
 		4 ->
@@ -331,9 +346,21 @@ walk_record_unpack_ast(Rec, Record_var_name, Acc_1) when is_atom(Record_var_name
 			end, Acc_1, Fields),
 	{Record_var, Acc_2}.
 
+%%
 walk_record_ast(Rec_ast, _Acc_1) ->
 	Rec_name = ast_record_name(Rec_ast),
-	merl:quote("aversion_new_" ++ atom_to_list(Rec_name) ++ "_latest()").
+	New_record = format_to_ast("aversion_new_~p_latest()", [Rec_name]),
+	lists:foldl(
+		fun(Field_x, Acc) ->
+			Field_name = ast_record_field_name(Field_x),
+			Field_value = ast_record_field_value_ast(Field_x),
+			Setter_function_name = list_to_atom(lists:flatten(io_lib:format("aversion_~p_set_~p", [Rec_name, Field_name]))),
+			setter_call_ast(Setter_function_name, Field_value, Acc)
+		end, New_record, ast_record_fields(Rec_ast)).
+
+%%
+setter_call_ast(Function_name, Value_arg_ast, Rec_arg_ast) when is_atom(Function_name) ->
+	{call,1,{atom,1,Function_name},[Value_arg_ast, Rec_arg_ast]}.
 
 %%
 walk_match_ast({match, _, Left, Right}, Acc_1) when element(1,Left) == record, element(1,Right) == var ->
@@ -393,18 +420,39 @@ insert_function_asts(Functions, [AST|Tail]) ->
 build_new_record_fns(Record_name, [], Version, Fields) ->
 	Record_tuple = list_to_tuple(
 		[Record_name, Version] ++ [ast_record_field_value(F, undefined) || F <- Fields]),
-	Function_erlang = lists:flatten(io_lib:format(
+	format_to_ast(
 		"aversion_new_~p_latest() -> ~p.", [Record_name,Record_tuple]
-	)),
-	merl:quote(Function_erlang);
+	);
 build_new_record_fns(Record_name, [Rec|Tail], _, Fields) ->
 	Version = ast_record_attribute_version(Rec),
 	%% first fields is always version
 	[_|Rec_fields] = ast_record_attribute_fields(Rec),
 	build_new_record_fns(Record_name, Tail, Version, Fields++Rec_fields).
 
+%%% ============================================================================
+%%% Setting Fields on Records
+%%% ============================================================================
 
+%% Go through each record and create a setter for each field
+%%     The record ASTs are for the same record name, just different versions
+%%     Each setter has an incrementing index in the tuple
+build_record_setter_fns(_, [], _, Fns) ->
+	Fns;
+build_record_setter_fns(Record_name, [Rec|Tail], Index_1, Fns) ->
+	Fields = [F_x || F_x <- ast_record_attribute_fields(Rec), ast_record_field_name(F_x) /= version],
+	{Setter_fns, Index_2} = lists:mapfoldl(
+		fun(F, Acc_index) ->
+	        {build_record_setter_fn(Record_name, F, Acc_index), Acc_index+1}
+	    end, Index_1, Fields),
+	build_record_setter_fns(Record_name, Tail, Index_2, Fns++Setter_fns).
 
+%%
+build_record_setter_fn(Record_name, Field_ast, Index) ->
+	Field_name = ast_record_field_name(Field_ast),
+	format_to_ast(
+		"aversion_~p_set_~p(V,Rec) -> setelement(~p,Rec,V).", [Record_name,Field_name,Index]
+	).
 
-
-
+%% `io:format/2` but compiling the format to AST.
+format_to_ast(Fmt, Args) ->
+	merl:quote(lists:flatten(io_lib:format(Fmt, Args))).
